@@ -3,6 +3,9 @@ import re
 import time
 import asyncio
 import requests
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
@@ -26,6 +29,23 @@ lock = asyncio.Lock()
 
 # Client = TON COMPTE (StringSession) => lit les groupes sans y mettre un bot
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+
+
+# ===== Dummy HTTP server pour Railway (évite "Stopping Container") =====
+def run_dummy_server():
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+        # évite de spammer les logs http
+        def log_message(self, format, *args):
+            return
+
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    server.serve_forever()
 
 
 def clip(s: str, n: int = 500) -> str:
@@ -161,7 +181,7 @@ async def handler(event):
 
 
 async def keep_alive():
-    # Empêche Railway de “penser” que le process est idle
+    # Log périodique (utile pour voir que ça tourne)
     while True:
         print("🟢 Bot running...")
         await asyncio.sleep(300)  # toutes les 5 minutes
@@ -183,6 +203,10 @@ async def runner():
 
 
 async def main():
+    # ✅ démarre le mini serveur HTTP Railway
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+    print("🌍 Dummy server running (Railway keep-alive)...")
+
     await client.connect()
     if not await client.is_user_authorized():
         raise RuntimeError("SESSION_STRING invalide ou expirée. Regénère-la.")
