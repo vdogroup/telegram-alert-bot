@@ -120,7 +120,7 @@ async def handler(event):
 
 
 async def main():
-    await client.start()
+    await client.start(bot_token=BOT_TOKEN)
     print("✅ Actif — Nexen: erreur/erreurs | Autre: erreur/erreurs + value/values")
     await client.run_until_disconnected()
 
