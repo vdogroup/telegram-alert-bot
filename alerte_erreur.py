@@ -3,7 +3,6 @@ import re
 import time
 import asyncio
 import requests
-import io
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
@@ -19,13 +18,13 @@ VALUE_CHAT_ID = int(os.environ["VALUE_CHAT_ID"])
 # ==========================================
 
 PATTERN_ERREUR = re.compile(r"\berreurs?\b", re.IGNORECASE)
-PATTERN_VALUE  = re.compile(r"\bvalues?\b", re.IGNORECASE)
+PATTERN_VALUE = re.compile(r"\bvalues?\b", re.IGNORECASE)
 
 COOLDOWN_SECONDS = 2  # 0 si tu veux tout instant (risque spam)
 last_sent = 0.0
 lock = asyncio.Lock()
 
-# Client = TON COMPTE (StringSession) => peut lire les groupes sans y mettre un bot
+# Client = TON COMPTE (StringSession) => lit les groupes sans y mettre un bot
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
@@ -87,24 +86,23 @@ async def send_alert(event, found: str):
     topic_id = get_topic_id(event.message)
     link = tme_link(chat_id, event.message.id, topic_id)
 
+    # ✅ FIX: concaténation correcte (il manquait un + avant "• Message")
     base_caption = (
         f"⚠️ Mot détecté : {found}\n"
         f"• Groupe: {chat_title}"
         + (f" | topic_id={topic_id}\n" if topic_id else "\n")
-        f"• Message:\n{clip(event.raw_text or '')}\n"
+        + f"• Message:\n{clip(event.raw_text or '')}\n"
         + (f"\n• Lien: {link}" if link else "")
     )
 
-    # Si média => on télécharge avec TON compte puis on ré-uploade via le bot
+    # Si média => download via TON compte puis re-upload via le bot
     if event.message.media:
         try:
             b = await client.download_media(event.message, file=bytes)
             if not b:
-                # fallback texte
                 await asyncio.to_thread(bot_send_text, base_caption)
                 return
 
-            # Détecter le type le plus simple
             kind = "document"
             if event.message.photo:
                 kind = "photo"
@@ -118,7 +116,6 @@ async def send_alert(event, found: str):
             await asyncio.to_thread(bot_send_media, kind, b, filename, base_caption)
             return
         except Exception as e:
-            # si upload média rate => au moins texte
             print("❌ media relay error:", repr(e))
             await asyncio.to_thread(bot_send_text, base_caption)
             return
@@ -164,14 +161,13 @@ async def handler(event):
 
 
 async def main():
-    # Se connecter (pas de prompt téléphone/code => StringSession déjà OK)
     await client.connect()
     if not await client.is_user_authorized():
         raise RuntimeError("SESSION_STRING invalide ou expirée. Regénère-la.")
 
     print("✅ Actif — Nexen: erreur/erreurs | Autre: erreur/erreurs + value/values")
 
-    # Garde le process vivant + reconnexion si Telegram drop
+    # Garde le process vivant + reconnexion
     while True:
         try:
             await client.run_until_disconnected()
