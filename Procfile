@@ -1,1 +1,2 @@
-worker: python alerte_erreur.py
+worker: python -u alerte_erreur.py
+
