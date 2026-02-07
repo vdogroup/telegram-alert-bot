@@ -1,35 +1,32 @@
+import os
 import re
 import time
 import asyncio
 import requests
+import io
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 
-# ====== TES INFOS ======
-API_ID = 26321237
-API_HASH = "0c190280234e0f9a34b1c9943d060ba4"
+# ========= ENV (Railway Variables) =========
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+SESSION_STRING = os.environ["SESSION_STRING"]
 
-# ⚠️ Token bot (évite de le repartager)
-BOT_TOKEN = "8122330719:AAFHMd7kPpyA_yXmdHgM9D_0M2vspjykkbk"
+ALERT_GROUP_ID = int(os.environ["ALERT_GROUP_ID"])
+NEXEN_CHAT_ID = int(os.environ["NEXEN_CHAT_ID"])
+VALUE_CHAT_ID = int(os.environ["VALUE_CHAT_ID"])
+# ==========================================
 
-# Groupes
-NEXEN_CHAT_ID = -1002197482751
-VALUE_CHAT_ID = -1001174759265
-
-# Groupe privé (toi + ton ami) où envoyer les alertes
-ALERT_GROUP_ID = -5166855510
-# =======================
-
-# Patterns
 PATTERN_ERREUR = re.compile(r"\berreurs?\b", re.IGNORECASE)
 PATTERN_VALUE  = re.compile(r"\bvalues?\b", re.IGNORECASE)
 
-# Latence / anti-spam
-COOLDOWN_SECONDS = 2  # mets 0 si tu veux tout, instant (attention spam)
-
-client = TelegramClient("session_erreur", API_ID, API_HASH)
-
+COOLDOWN_SECONDS = 2  # 0 si tu veux tout instant (risque spam)
 last_sent = 0.0
 lock = asyncio.Lock()
+
+# Client = TON COMPTE (StringSession) => peut lire les groupes sans y mettre un bot
+client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
 def clip(s: str, n: int = 500) -> str:
@@ -57,13 +54,77 @@ def tme_link(chat_id: int, msg_id: int, topic_id):
 
 def bot_send_text(text: str):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": ALERT_GROUP_ID,
-        "text": text,
-        "disable_web_page_preview": True
-    }
-    r = requests.post(url, json=payload, timeout=10)
+    payload = {"chat_id": ALERT_GROUP_ID, "text": text, "disable_web_page_preview": True}
+    r = requests.post(url, json=payload, timeout=20)
     r.raise_for_status()
+
+
+def bot_send_media(kind: str, file_bytes: bytes, filename: str, caption: str):
+    """
+    kind: 'photo' | 'video' | 'document'
+    """
+    if kind == "photo":
+        method = "sendPhoto"
+        field = "photo"
+    elif kind == "video":
+        method = "sendVideo"
+        field = "video"
+    else:
+        method = "sendDocument"
+        field = "document"
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+    data = {"chat_id": str(ALERT_GROUP_ID), "caption": caption}
+    files = {field: (filename, file_bytes)}
+
+    r = requests.post(url, data=data, files=files, timeout=60)
+    r.raise_for_status()
+
+
+async def send_alert(event, found: str):
+    chat_id = event.chat_id
+    chat_title = getattr(event.chat, "title", None) or str(chat_id)
+    topic_id = get_topic_id(event.message)
+    link = tme_link(chat_id, event.message.id, topic_id)
+
+    base_caption = (
+        f"⚠️ Mot détecté : {found}\n"
+        f"• Groupe: {chat_title}"
+        + (f" | topic_id={topic_id}\n" if topic_id else "\n")
+        f"• Message:\n{clip(event.raw_text or '')}\n"
+        + (f"\n• Lien: {link}" if link else "")
+    )
+
+    # Si média => on télécharge avec TON compte puis on ré-uploade via le bot
+    if event.message.media:
+        try:
+            b = await client.download_media(event.message, file=bytes)
+            if not b:
+                # fallback texte
+                await asyncio.to_thread(bot_send_text, base_caption)
+                return
+
+            # Détecter le type le plus simple
+            kind = "document"
+            if event.message.photo:
+                kind = "photo"
+                filename = "image.jpg"
+            elif event.message.video:
+                kind = "video"
+                filename = "video.mp4"
+            else:
+                filename = "file.bin"
+
+            await asyncio.to_thread(bot_send_media, kind, b, filename, base_caption)
+            return
+        except Exception as e:
+            # si upload média rate => au moins texte
+            print("❌ media relay error:", repr(e))
+            await asyncio.to_thread(bot_send_text, base_caption)
+            return
+
+    # Texte simple
+    await asyncio.to_thread(bot_send_text, base_caption)
 
 
 @client.on(events.NewMessage)
@@ -76,13 +137,12 @@ async def handler(event):
 
     text = event.raw_text or ""
 
-    # Règles par groupe :
-    # - Nexen: seulement erreur/erreurs
-    # - Autre: erreur/erreurs + value/values
+    # Nexen: erreur/erreurs
     if chat_id == NEXEN_CHAT_ID:
         if not PATTERN_ERREUR.search(text):
             return
         found = "erreur/erreurs"
+    # Autre: erreur/erreurs + value/values
     else:
         found_list = []
         if PATTERN_ERREUR.search(text):
@@ -93,36 +153,36 @@ async def handler(event):
             return
         found = " + ".join(found_list)
 
-    # anti-spam léger
+    # Anti-spam léger
     now = time.time()
     async with lock:
         if COOLDOWN_SECONDS and (now - last_sent) < COOLDOWN_SECONDS:
             return
         last_sent = now
 
-    chat_title = getattr(event.chat, "title", None) or str(chat_id)
-    topic_id = get_topic_id(event.message)
-    link = tme_link(chat_id, event.message.id, topic_id)
-
-    msg = (
-        f"⚠️ Mot détecté : {found}\n\n"
-        f"• Groupe: {chat_title}"
-        + (f" | topic_id={topic_id}" if topic_id else "")
-        + "\n"
-        f"• Message:\n{clip(text)}\n\n"
-        + (f"• Lien: {link}" if link else "")
-    )
-
-    try:
-        await asyncio.to_thread(bot_send_text, msg)
-    except Exception as e:
-        print("❌ sendMessage error:", repr(e))
+    await send_alert(event, found)
 
 
 async def main():
-    await client.start(bot_token=BOT_TOKEN)
+    # Se connecter (pas de prompt téléphone/code => StringSession déjà OK)
+    await client.connect()
+    if not await client.is_user_authorized():
+        raise RuntimeError("SESSION_STRING invalide ou expirée. Regénère-la.")
+
     print("✅ Actif — Nexen: erreur/erreurs | Autre: erreur/erreurs + value/values")
-    await client.run_until_disconnected()
+
+    # Garde le process vivant + reconnexion si Telegram drop
+    while True:
+        try:
+            await client.run_until_disconnected()
+        except Exception as e:
+            print("❌ disconnected, retry in 5s:", repr(e))
+            await asyncio.sleep(5)
+            try:
+                await client.connect()
+            except Exception as e2:
+                print("❌ reconnect failed:", repr(e2))
+                await asyncio.sleep(10)
 
 
 if __name__ == "__main__":
