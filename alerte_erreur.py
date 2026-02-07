@@ -86,7 +86,7 @@ async def send_alert(event, found: str):
     topic_id = get_topic_id(event.message)
     link = tme_link(chat_id, event.message.id, topic_id)
 
-    # ✅ FIX: concaténation correcte (il manquait un + avant "• Message")
+    # ✅ concaténation correcte
     base_caption = (
         f"⚠️ Mot détecté : {found}\n"
         f"• Groupe: {chat_title}"
@@ -160,14 +160,15 @@ async def handler(event):
     await send_alert(event, found)
 
 
-async def main():
-    await client.connect()
-    if not await client.is_user_authorized():
-        raise RuntimeError("SESSION_STRING invalide ou expirée. Regénère-la.")
+async def keep_alive():
+    # Empêche Railway de “penser” que le process est idle
+    while True:
+        print("🟢 Bot running...")
+        await asyncio.sleep(300)  # toutes les 5 minutes
 
-    print("✅ Actif — Nexen: erreur/erreurs | Autre: erreur/erreurs + value/values")
 
-    # Garde le process vivant + reconnexion
+async def runner():
+    # Boucle de reconnexion propre
     while True:
         try:
             await client.run_until_disconnected()
@@ -177,8 +178,22 @@ async def main():
             try:
                 await client.connect()
             except Exception as e2:
-                print("❌ reconnect failed:", repr(e2))
+                print("❌ reconnect failed, retry in 10s:", repr(e2))
                 await asyncio.sleep(10)
+
+
+async def main():
+    await client.connect()
+    if not await client.is_user_authorized():
+        raise RuntimeError("SESSION_STRING invalide ou expirée. Regénère-la.")
+
+    print("✅ Actif — Nexen: erreur/erreurs | Autre: erreur/erreurs + value/values")
+
+    # Le bot tourne + keep alive en parallèle
+    await asyncio.gather(
+        runner(),
+        keep_alive(),
+    )
 
 
 if __name__ == "__main__":
