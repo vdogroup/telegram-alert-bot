@@ -31,21 +31,27 @@ lock = asyncio.Lock()
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
-# ===== Dummy HTTP server pour Railway (évite "Stopping Container") =====
+# ===== Dummy HTTP server pour Railway (Web Service) =====
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    # évite de spammer les logs http
+    def log_message(self, format, *args):
+        return
+
+
 def run_dummy_server():
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
-
-        # évite de spammer les logs http
-        def log_message(self, format, *args):
-            return
-
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), Handler)
-    server.serve_forever()
+    try:
+        port = int(os.environ.get("PORT", "8080"))
+        server = HTTPServer(("0.0.0.0", port), Handler)
+        print(f"🌍 Dummy HTTP server listening on 0.0.0.0:{port}")
+        server.serve_forever()
+    except Exception as e:
+        # Si ça plante, Railway risque de stop => on log au moins
+        print("❌ Dummy server crashed:", repr(e))
 
 
 def clip(s: str, n: int = 500) -> str:
@@ -106,7 +112,6 @@ async def send_alert(event, found: str):
     topic_id = get_topic_id(event.message)
     link = tme_link(chat_id, event.message.id, topic_id)
 
-    # ✅ concaténation correcte
     base_caption = (
         f"⚠️ Mot détecté : {found}\n"
         f"• Groupe: {chat_title}"
@@ -127,7 +132,7 @@ async def send_alert(event, found: str):
             if event.message.photo:
                 kind = "photo"
                 filename = "image.jpg"
-            elif event.message.video:
+            elif getattr(event.message, "video", None):
                 kind = "video"
                 filename = "video.mp4"
             else:
@@ -135,6 +140,7 @@ async def send_alert(event, found: str):
 
             await asyncio.to_thread(bot_send_media, kind, b, filename, base_caption)
             return
+
         except Exception as e:
             print("❌ media relay error:", repr(e))
             await asyncio.to_thread(bot_send_text, base_caption)
@@ -180,11 +186,11 @@ async def handler(event):
     await send_alert(event, found)
 
 
-async def keep_alive():
-    # Log périodique (utile pour voir que ça tourne)
+async def heartbeat():
+    # Un petit log rare juste pour prouver que le process vit
     while True:
-        print("🟢 Bot running...")
-        await asyncio.sleep(300)  # toutes les 5 minutes
+        await asyncio.sleep(600)  # 10 min
+        print("🟢 heartbeat (still alive)")
 
 
 async def runner():
@@ -195,28 +201,29 @@ async def runner():
         except Exception as e:
             print("❌ disconnected, retry in 5s:", repr(e))
             await asyncio.sleep(5)
+            # Telethon gère bien start/connect ; on retente un start
             try:
-                await client.connect()
+                await client.start()
             except Exception as e2:
-                print("❌ reconnect failed, retry in 10s:", repr(e2))
+                print("❌ restart failed, retry in 10s:", repr(e2))
                 await asyncio.sleep(10)
 
 
 async def main():
-    # ✅ démarre le mini serveur HTTP Railway
+    # ✅ démarrer le serveur HTTP tout de suite
     threading.Thread(target=run_dummy_server, daemon=True).start()
-    print("🌍 Dummy server running (Railway keep-alive)...")
 
-    await client.connect()
+    # ✅ start = init + auth propre (avec StringSession déjà valide)
+    await client.start()
     if not await client.is_user_authorized():
         raise RuntimeError("SESSION_STRING invalide ou expirée. Regénère-la.")
 
     print("✅ Actif — Nexen: erreur/erreurs | Autre: erreur/erreurs + value/values")
 
-    # Le bot tourne + keep alive en parallèle
+    # Le bot tourne + heartbeat en parallèle
     await asyncio.gather(
         runner(),
-        keep_alive(),
+        heartbeat(),
     )
 
 
